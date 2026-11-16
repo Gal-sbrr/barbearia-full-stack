@@ -9,6 +9,10 @@ function App() {
   const [form, setForm] = useState({ nome: '', telefone: '', email: '', servico_id: '', data: '', hora: '' })
   const [mensagem, setMensagem] = useState(null)
   const [carregando, setCarregando] = useState(false)
+  const [token, setToken] = useState(() => {
+    try { return sessionStorage.getItem('token') } catch { return null }
+  })
+  const [login, setLogin] = useState({ email: '', senha: '' })
 
   useEffect(() => {
     fetch(`${API_URL}/servicos`)
@@ -18,14 +22,68 @@ function App() {
   }, [])
 
   useEffect(() => {
-    if (view === 'painel') buscarAgendamentos()
-  }, [view])
+    if (view === 'painel' && token) buscarAgendamentos()
+  }, [view, token])
+
+  function guardarToken(novo) {
+    setToken(novo)
+    try {
+      if (novo) sessionStorage.setItem('token', novo)
+      else sessionStorage.removeItem('token')
+    } catch { /* storage indisponível: o login vale só até recarregar a página */ }
+  }
+
+  function sair() {
+    guardarToken(null)
+    setAgendamentos([])
+  }
+
+  // Chamadas do painel: envia o token e, se o servidor recusar, volta para o login.
+  async function fetchAdmin(caminho, opcoes = {}) {
+    const res = await fetch(`${API_URL}${caminho}`, {
+      ...opcoes,
+      headers: { ...opcoes.headers, Authorization: `Bearer ${token}` },
+    })
+    if (res.status === 401) {
+      sair()
+      setMensagem({ tipo: 'erro', texto: 'Sessão expirada. Entre novamente.' })
+      throw new Error('não autenticado')
+    }
+    return res
+  }
 
   function buscarAgendamentos() {
-    fetch(`${API_URL}/agendamentos`)
+    fetchAdmin('/agendamentos')
       .then(r => r.json())
       .then(setAgendamentos)
-      .catch(() => setMensagem({ tipo: 'erro', texto: 'Não foi possível carregar os agendamentos.' }))
+      .catch(err => {
+        if (err.message !== 'não autenticado') {
+          setMensagem({ tipo: 'erro', texto: 'Não foi possível carregar os agendamentos.' })
+        }
+      })
+  }
+
+  async function handleLogin(e) {
+    e.preventDefault()
+    setMensagem(null)
+    setCarregando(true)
+
+    try {
+      const res = await fetch(`${API_URL}/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(login),
+      })
+      const dados = await res.json()
+      if (!res.ok) throw new Error(dados.erro || 'Erro ao entrar')
+
+      guardarToken(dados.token)
+      setLogin({ email: '', senha: '' })
+    } catch (err) {
+      setMensagem({ tipo: 'erro', texto: err.message })
+    } finally {
+      setCarregando(false)
+    }
   }
 
   function handleChange(e) {
@@ -66,8 +124,12 @@ function App() {
   }
 
   async function cancelar(id) {
-    await fetch(`${API_URL}/agendamentos/${id}/cancelar`, { method: 'PATCH' })
-    buscarAgendamentos()
+    try {
+      await fetchAdmin(`/agendamentos/${id}/cancelar`, { method: 'PATCH' })
+      buscarAgendamentos()
+    } catch {
+      /* sessão expirada: fetchAdmin já avisou e voltou para o login */
+    }
   }
 
   return (
@@ -166,9 +228,49 @@ function App() {
           </form>
         )}
 
-        {view === 'painel' && (
+        {view === 'painel' && !token && (
+          <form onSubmit={handleLogin} className="bg-charcoal text-ivory rounded-[28px] p-8 md:p-10 max-w-md">
+            <h1 className="font-display text-4xl mb-8">Entrar</h1>
+
+            <div className="grid gap-5">
+              <div>
+                <label className="font-mono text-xs uppercase tracking-widest text-amber-light">E-mail</label>
+                <input
+                  type="email" value={login.email} required autoComplete="username"
+                  onChange={e => setLogin({ ...login, email: e.target.value })}
+                  className="w-full mt-1.5 bg-charcoal-light border border-ivory/15 rounded-lg px-4 py-2.5 outline-none focus:border-amber"
+                />
+              </div>
+              <div>
+                <label className="font-mono text-xs uppercase tracking-widest text-amber-light">Senha</label>
+                <input
+                  type="password" value={login.senha} required autoComplete="current-password"
+                  onChange={e => setLogin({ ...login, senha: e.target.value })}
+                  className="w-full mt-1.5 bg-charcoal-light border border-ivory/15 rounded-lg px-4 py-2.5 outline-none focus:border-amber"
+                />
+              </div>
+            </div>
+
+            <button
+              type="submit" disabled={carregando}
+              className="mt-8 w-full bg-amber text-charcoal font-semibold py-3.5 rounded-full hover:bg-amber-light transition-colors disabled:opacity-50"
+            >
+              {carregando ? 'Entrando...' : 'Entrar'}
+            </button>
+          </form>
+        )}
+
+        {view === 'painel' && token && (
           <div>
-            <h1 className="font-display text-4xl text-charcoal mb-8">Painel de agendamentos</h1>
+            <div className="flex items-center justify-between mb-8">
+              <h1 className="font-display text-4xl text-charcoal">Painel de agendamentos</h1>
+              <button
+                onClick={sair}
+                className="font-mono text-xs uppercase tracking-widest text-charcoal/60 hover:text-charcoal"
+              >
+                Sair
+              </button>
+            </div>
             <div className="grid gap-4">
               {agendamentos.length === 0 && (
                 <p className="text-charcoal/50 font-body">Nenhum agendamento ainda.</p>
